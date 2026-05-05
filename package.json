@@ -1,0 +1,55 @@
+{
+  "name": "openclaw-gladia",
+  "version": "0.1.0",
+  "description": "Gladia batch speech-to-text provider for OpenClaw media understanding",
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./media-understanding-provider": "./media-understanding-provider.js"
+  },
+  "files": [
+    "index.js",
+    "media-understanding-provider.js",
+    "openclaw.plugin.json",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "pack:check": "npm pack --dry-run"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "gladia",
+    "speech-to-text",
+    "transcription"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.3.24-beta.2"
+  },
+  "devDependencies": {
+    "openclaw": "^2026.5.4"
+  },
+  "openclaw": {
+    "extensions": [
+      "./index.js"
+    ],
+    "providers": [
+      "gladia"
+    ],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    },
+    "build": {
+      "openclawVersion": "2026.5.4",
+      "pluginSdkVersion": "2026.5.4"
+    }
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "id": "gladia",
+  "name": "Gladia",
+  "description": "Gladia batch speech-to-text provider for OpenClaw media understanding",
+  "providers": [
+    "gladia"
+  ],
+  "contracts": {
+    "mediaUnderstandingProviders": [
+      "gladia"
+    ]
+  },
+  "mediaUnderstandingProviderMetadata": {
+    "gladia": {
+      "capabilities": [
+        "audio"
+      ],
+      "defaultModels": {
+        "audio": "solaria-1"
+      },
+      "autoPriority": {
+        "audio": 45
+      }
+    }
+  },
+  "modelSupport": {
+    "modelPrefixes": [
+      "gladia/"
+    ]
+  },
+  "setup": {
+    "requiresRuntime": false,
+    "providers": [
+      {
+        "id": "gladia",
+        "authMethods": [
+          "api-key"
+        ],
+        "envVars": [
+          "GLADIA_API_KEY"
+        ]
+      }
+    ]
+  },
+  "providerAuthEnvVars": {
+    "gladia": [
+      "GLADIA_API_KEY"
+    ]
+  },
+  "providerAuthChoices": [
+    {
+      "provider": "gladia",
+      "method": "api-key",
+      "choiceId": "gladia-api-key",
+      "choiceLabel": "Gladia API key",
+      "groupId": "gladia",
+      "groupLabel": "Gladia",
+      "cliFlag": "--gladia-api-key",
+      "cliOption": "--gladia-api-key <key>",
+      "cliDescription": "Gladia API key"
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false
+  }
+}
