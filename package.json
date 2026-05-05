@@ -17,7 +17,8 @@
   ],
   "scripts": {
     "test": "node --test",
-    "pack:check": "npm pack --dry-run"
+    "pack:check": "npm pack --dry-run",
+    "publish:clawhub": "npx clawhub package publish https://github.com/btoueg/openclaw-gladia"
   },
   "keywords": [
     "openclaw",
@@ -26,6 +27,14 @@
     "speech-to-text",
     "transcription"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/btoueg/openclaw-gladia.git"
+  },
+  "bugs": {
+    "url": "https://github.com/btoueg/openclaw-gladia/issues"
+  },
+  "homepage": "https://github.com/btoueg/openclaw-gladia#readme",
   "license": "MIT",
   "engines": {
     "node": ">=20"
