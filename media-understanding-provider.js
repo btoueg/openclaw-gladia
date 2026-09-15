@@ -9,41 +9,60 @@ export const gladiaMediaUnderstandingProvider = {
   transcribeAudio: transcribeGladiaAudio,
 };
 
+// Module-level queue shared by every transcription in this process: voice
+// notes arriving in a burst run one job at a time instead of racing past the
+// Gladia plan concurrency limit (which answers 429).
+const jobQueue = { active: 0, waiters: [] };
+
 export async function transcribeGladiaAudio(req) {
   const fetchFn = req.fetchFn ?? fetch;
   const baseUrl = normalizeBaseUrl(req.baseUrl);
   const timeoutMs = normalizeTimeoutMs(req.timeoutMs);
-  const uploaded = await uploadAudio({
+  const deadline = Date.now() + timeoutMs;
+  const query = req.query ?? {};
+  const transport = {
     fetchFn,
-    baseUrl,
-    apiKey: req.apiKey,
-    buffer: req.buffer,
-    fileName: req.fileName,
-    mime: req.mime,
-    timeoutMs,
-  });
-  const job = await createTranscriptionJob({
-    fetchFn,
-    baseUrl,
-    apiKey: req.apiKey,
-    audioUrl: uploaded.audio_url,
-    language: req.language,
-    prompt: req.prompt,
-    query: req.query,
-    timeoutMs,
-  });
-  const result = await pollTranscriptionJob({
-    fetchFn,
-    baseUrl,
-    apiKey: req.apiKey,
-    jobId: job.id,
-    timeoutMs,
-  });
-
-  return {
-    text: extractTranscript(result),
-    model: DEFAULT_GLADIA_AUDIO_MODEL,
+    deadline,
+    maxRetries: readNonNegativeNumber(query.max_retries ?? query.maxRetries, 3),
+    backoffMs: readPositiveNumber(query.retry_backoff_ms ?? query.retryBackoffMs, 1000),
   };
+  const maxConcurrent = readPositiveNumber(query.max_concurrent ?? query.maxConcurrent, 1);
+
+  return withJobSlot(maxConcurrent, async () => {
+    const uploaded = await uploadAudio({
+      transport,
+      baseUrl,
+      apiKey: req.apiKey,
+      buffer: req.buffer,
+      fileName: req.fileName,
+      mime: req.mime,
+      timeoutMs,
+    });
+    const job = await createTranscriptionJob({
+      transport,
+      baseUrl,
+      apiKey: req.apiKey,
+      audioUrl: uploaded.audio_url,
+      language: req.language,
+      prompt: req.prompt,
+      query,
+      timeoutMs,
+    });
+    const result = await pollTranscriptionJob({
+      transport,
+      baseUrl,
+      apiKey: req.apiKey,
+      jobId: job.id,
+      query,
+      timeoutMs,
+      deadline,
+    });
+
+    return {
+      text: extractTranscript(result),
+      model: DEFAULT_GLADIA_AUDIO_MODEL,
+    };
+  });
 }
 
 async function uploadAudio(params) {
@@ -56,7 +75,7 @@ async function uploadAudio(params) {
     params.fileName || "audio",
   );
 
-  const response = await fetchWithTimeout(params.fetchFn, `${params.baseUrl}/v2/upload`, {
+  const response = await fetchWithRetry(params.transport, `${params.baseUrl}/v2/upload`, {
     method: "POST",
     headers: gladiaHeaders(params.apiKey),
     body: form,
@@ -72,7 +91,7 @@ async function uploadAudio(params) {
 
 async function createTranscriptionJob(params) {
   const body = buildTranscriptionPayload(params);
-  const response = await fetchWithTimeout(params.fetchFn, `${params.baseUrl}/v2/pre-recorded`, {
+  const response = await fetchWithRetry(params.transport, `${params.baseUrl}/v2/pre-recorded`, {
     method: "POST",
     headers: {
       ...gladiaHeaders(params.apiKey),
@@ -90,16 +109,15 @@ async function createTranscriptionJob(params) {
 }
 
 async function pollTranscriptionJob(params) {
-  const startedAt = Date.now();
   const pollIntervalMs = readPositiveNumber(params.query?.poll_interval_ms, 3000);
-  while (Date.now() - startedAt < params.timeoutMs) {
-    const response = await fetchWithTimeout(
-      params.fetchFn,
+  while (remainingMs(params.deadline) > 0) {
+    const response = await fetchWithRetry(
+      params.transport,
       `${params.baseUrl}/v2/pre-recorded/${encodeURIComponent(params.jobId)}`,
       {
         method: "GET",
         headers: gladiaHeaders(params.apiKey),
-        timeoutMs: Math.min(params.timeoutMs, 30000),
+        timeoutMs: Math.min(30000, Math.max(remainingMs(params.deadline), 0)),
       },
     );
     await assertOk(response, "Gladia transcription result fetch failed");
@@ -119,6 +137,66 @@ async function pollTranscriptionJob(params) {
     await sleep(pollIntervalMs);
   }
   throw new Error(`Timed out waiting for Gladia transcription job ${params.jobId}`);
+}
+
+// Awaits `fn` while holding one of `limit` process-wide slots. Callers that
+// exceed the limit park in FIFO order and re-check their own limit on wake.
+async function withJobSlot(limit, fn) {
+  while (jobQueue.active >= limit) {
+    await new Promise((resolve) => jobQueue.waiters.push(resolve));
+  }
+  jobQueue.active += 1;
+  try {
+    return await fn();
+  } finally {
+    jobQueue.active -= 1;
+    jobQueue.waiters.shift()?.();
+  }
+}
+
+// Retries 429/5xx responses and network-level failures with exponential
+// backoff, honoring Retry-After when present, until the shared deadline.
+async function fetchWithRetry(transport, url, init) {
+  const { fetchFn, deadline, maxRetries, backoffMs } = transport;
+  let attempt = 0;
+  for (;;) {
+    let response;
+    try {
+      response = await fetchWithTimeout(fetchFn, url, {
+        ...init,
+        timeoutMs: Math.min(init.timeoutMs, Math.max(remainingMs(deadline), 0)),
+      });
+    } catch (error) {
+      if (attempt >= maxRetries || remainingMs(deadline) <= 0) throw error;
+      await sleep(retryDelayMs(null, attempt, backoffMs, deadline));
+      attempt += 1;
+      continue;
+    }
+    if (response.ok || !isRetryableStatus(response.status)) return response;
+    if (attempt >= maxRetries || remainingMs(deadline) <= 0) return response;
+    await sleep(retryDelayMs(response, attempt, backoffMs, deadline));
+    attempt += 1;
+  }
+}
+
+function isRetryableStatus(status) {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+function retryDelayMs(response, attempt, backoffMs, deadline) {
+  const exponential = backoffMs * 2 ** attempt;
+  const retryAfter = readRetryAfterMs(response);
+  const delay = Math.max(retryAfter ?? 0, exponential);
+  return Math.max(0, Math.min(delay, remainingMs(deadline)));
+}
+
+function readRetryAfterMs(response) {
+  const raw = response?.headers?.get?.("retry-after");
+  if (!raw) return null;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, seconds * 1000);
+  const dateMs = Date.parse(raw);
+  return Number.isFinite(dateMs) ? Math.max(0, dateMs - Date.now()) : null;
 }
 
 function buildTranscriptionPayload(params) {
@@ -235,6 +313,15 @@ function readBoolean(value, fallback) {
 function readPositiveNumber(value, fallback) {
   const n = typeof value === "number" ? value : Number(value);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+function readNonNegativeNumber(value, fallback) {
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+function remainingMs(deadline) {
+  return deadline - Date.now();
 }
 
 function isRecord(value) {

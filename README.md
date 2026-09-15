@@ -63,6 +63,26 @@ query/options. Supported primitive query fields:
 - `punctuation_enhanced`: boolean
 - `poll_interval_ms`: polling interval, default `3000`
 
+## Throttling and Retry Behavior
+
+Since 0.2.0 the provider throttles itself and absorbs transient API errors:
+
+- **Job serialization**: transcriptions run through a process-wide queue, one
+  job at a time (`max_concurrent`, default `1`). Voice notes arriving in a
+  burst queue up instead of racing past the Gladia plan concurrency limit,
+  which answers 429 on excess concurrent pre-recorded jobs (3 on the free
+  plan, 25 on paid plans).
+- **Retries**: HTTP 429 and 5xx responses and network-level failures are
+  retried with exponential backoff (`max_retries`, default `3`;
+  `retry_backoff_ms`, default `1000` -> 1s, 2s, 4s). A `Retry-After` response
+  header is honored when longer than the computed backoff. Once retries are
+  exhausted, the original error surfaces unchanged (for example
+  `Gladia upload failed: 429 ...`).
+
+All three knobs are plain query fields, so they can be set from OpenClaw
+config under `providerOptions.gladia`. The queue is per process: the Gateway
+serializes its own pipeline, and CLI runs are separate processes.
+
 ## Development
 
 ```bash
